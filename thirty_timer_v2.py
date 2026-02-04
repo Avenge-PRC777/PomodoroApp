@@ -6,11 +6,17 @@ import json
 import sys
 import os
 import winsound
+try:
+    import pygame
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
 
 # ----- Defaults -----
 DEFAULT_SET_MINUTES = 30
 DEFAULT_PING_VALUE = 5
 DEFAULT_PING_UNIT = "Minutes"  # Off | Seconds | Minutes
+DEFAULT_VOLUME = 50  # 0-100
 
 PERSIST_PATH = Path.home() / "AppData/Local/ThirtyTimer"
 PERSIST_FILE = PERSIST_PATH / "state.json"
@@ -46,6 +52,14 @@ class ThirtyTimer(tk.Tk):
         self.ping_value = DEFAULT_PING_VALUE
         self.ping_unit = DEFAULT_PING_UNIT
         self.ping_interval_seconds = self._calc_ping_interval_seconds()
+        self.volume = DEFAULT_VOLUME
+
+        # Initialize pygame mixer if available
+        if PYGAME_AVAILABLE:
+            try:
+                pygame.mixer.init()
+            except:
+                pass
 
         # Fonts scale dynamically
         self.font_timer = tkfont.Font(family="Segoe UI", size=24, weight="bold")
@@ -61,6 +75,21 @@ class ThirtyTimer(tk.Tk):
         self.bind("<space>", lambda e: self.toggle())
         self.bind("<KeyPress-r>", lambda e: self.reset())
         self.bind("<Configure>", self._on_resize)
+
+        # drag state
+        self._drag_start_x = 0
+        self._drag_start_y = 0
+
+
+    # ---------- Drag ----------
+    def _start_drag(self, event):
+        self._drag_start_x = event.x
+        self._drag_start_y = event.y
+
+    def _on_drag(self, event):
+        x = self.winfo_x() + event.x - self._drag_start_x
+        y = self.winfo_y() + event.y - self._drag_start_y
+        self.geometry(f"+{x}+{y}")
 
 
     # ---------- UI ----------
@@ -81,10 +110,17 @@ class ThirtyTimer(tk.Tk):
         style.configure("Timer.TLabel", font=self.font_timer)
         style.configure("Info.TLabel", font=self.font_info)
         style.configure("Count.TLabel", font=self.font_count)
+        style.configure("Drag.TLabel", font=self.font_info, foreground="#999", cursor="fleur")
 
         # Time display
         self.time_lbl = ttk.Label(outer, text="00:00:00", style="Timer.TLabel")
         self.time_lbl.grid(row=0, column=0, columnspan=4, pady=(0, 4), sticky="ew")
+
+        # Drag handle (overlaid on top-left corner)
+        self.drag_lbl = ttk.Label(outer, text="⋮⋮", style="Drag.TLabel")
+        self.drag_lbl.place(x=0, y=0)
+        self.drag_lbl.bind("<Button-1>", self._start_drag)
+        self.drag_lbl.bind("<B1-Motion>", self._on_drag)
 
         # Buttons row
         self.start_btn = ttk.Button(outer, text="▶", command=self.toggle)
@@ -124,6 +160,15 @@ class ThirtyTimer(tk.Tk):
         self.apply_btn = ttk.Button(outer, text="Apply", command=self.apply_settings)
         self.apply_btn.grid(row=4, column=3, sticky="e", pady=(4, 0))
 
+        # Volume control
+        ttk.Label(outer, text="Vol:", style="Info.TLabel").grid(row=5, column=0, sticky="w", pady=(4, 0))
+        self.volume_scale = ttk.Scale(outer, from_=0, to=100, orient="horizontal", command=self._on_volume_change)
+        self.volume_scale.set(self.volume)
+        self.volume_scale.grid(row=5, column=1, columnspan=2, sticky="ew", pady=(4, 0))
+
+        self.volume_lbl = ttk.Label(outer, text=f"{int(self.volume)}%", style="Info.TLabel")
+        self.volume_lbl.grid(row=5, column=3, sticky="w", pady=(4, 0))
+
         # Tip (WRAPS — no more fixed giant width)
         tip = ttk.Label(
             outer,
@@ -132,11 +177,17 @@ class ThirtyTimer(tk.Tk):
             foreground="#666",
             wraplength=160
         )
-        tip.grid(row=5, column=0, columnspan=4, pady=(4, 0), sticky="w")
+        tip.grid(row=6, column=0, columnspan=4, pady=(4, 0), sticky="w")
 
 
     def _count_text(self):
         return f"Sets: {self.sets_done}"
+
+
+    def _on_volume_change(self, value):
+        self.volume = float(value)
+        self.volume_lbl.config(text=f"{int(self.volume)}%")
+        self._save_state()
 
 
     def _update_settings_controls_from_state(self):
@@ -147,6 +198,9 @@ class ThirtyTimer(tk.Tk):
         self.ping_value_spin.insert(0, str(self.ping_value))
 
         self.ping_unit_combo.set(self.ping_unit)
+
+        self.volume_scale.set(self.volume)
+        self.volume_lbl.config(text=f"{int(self.volume)}%")
 
 
     # ---------- Timer logic ----------
@@ -271,6 +325,7 @@ class ThirtyTimer(tk.Tk):
                 self.set_minutes = int(data.get("set_minutes", DEFAULT_SET_MINUTES))
                 self.ping_value = int(data.get("ping_value", DEFAULT_PING_VALUE))
                 self.ping_unit = str(data.get("ping_unit", DEFAULT_PING_UNIT))
+                self.volume = float(data.get("volume", DEFAULT_VOLUME))
                 self.target_seconds = self.set_minutes * 60
                 self.ping_interval_seconds = self._calc_ping_interval_seconds()
                 self.remaining = self.target_seconds
@@ -285,6 +340,7 @@ class ThirtyTimer(tk.Tk):
                 "set_minutes": self.set_minutes,
                 "ping_value": self.ping_value,
                 "ping_unit": self.ping_unit,
+                "volume": self.volume,
             }
             PERSIST_FILE.write_text(json.dumps(payload), encoding="utf-8")
         except:
@@ -294,7 +350,11 @@ class ThirtyTimer(tk.Tk):
     def _beep_ok(self):
         try:
             sound_file = os.path.join(os.path.dirname(__file__), "ding.wav")
-            if os.path.exists(sound_file):
+            if os.path.exists(sound_file) and PYGAME_AVAILABLE:
+                sound = pygame.mixer.Sound(sound_file)
+                sound.set_volume(self.volume / 100.0)
+                sound.play()
+            elif os.path.exists(sound_file):
                 winsound.PlaySound(sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC)
             else:
                 winsound.MessageBeep(winsound.MB_OK)
@@ -304,7 +364,11 @@ class ThirtyTimer(tk.Tk):
     def _beep_exclaim(self):
         try:
             sound_file = os.path.join(os.path.dirname(__file__), "ting.wav")
-            if os.path.exists(sound_file):
+            if os.path.exists(sound_file) and PYGAME_AVAILABLE:
+                sound = pygame.mixer.Sound(sound_file)
+                sound.set_volume(self.volume / 100.0)
+                sound.play()
+            elif os.path.exists(sound_file):
                 winsound.PlaySound(sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC)
             else:
                 winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
