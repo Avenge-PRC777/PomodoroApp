@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['thirty_timer.py'],
+    ['thirty_timer_v2.py'],
     pathex=[],
     binaries=[],
     datas=[('ding.wav', '.')],
